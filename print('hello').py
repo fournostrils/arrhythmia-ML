@@ -2,7 +2,7 @@ import wfdb
 from wfdb import processing
 import pandas as pd
 import numpy as np
-from scipy.signal import medfilt, find_peaks
+from scipy.signal import medfilt, find_peaks, butter, lfilter
 import matplotlib.pyplot as plt
 import pywt # type: ignore
 
@@ -46,12 +46,22 @@ def save_ecg_to_csv(record_name):
             # Assign the annotation symbol to the corresponding index in the DataFrame
             df.at[sample_index,'Annotation'] = symbol
     '''
-    
     baseline = medfilt(df[lead_names[0]], 71)       #cite the guy for this
     baseline = medfilt(baseline, 215)
+
     df[lead_names[0]] = df[lead_names[0]]-np.asfarray(baseline)
-    
-    df[lead_names[0]]=(df[lead_names[0]]-np.mean(df[lead_names[0]]))/np.std(df[lead_names[0]])
+    #df[lead_names[0]]=(df[lead_names[0]]-np.mean(df[lead_names[0]]))/np.std(df[lead_names[0]])
+
+    ######## andrew code ###########
+    highcut = 40.0
+    lowcut = 0.5
+
+    nyq = 0.5 * sampling_frequency
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(5, [low, high], btype='band')
+    df[lead_names[0]] = lfilter(b, a, df[lead_names[0]])
+    ##################
 
     # Save DataFrame to CSV file
     filename = f'{record_name}.csv'
@@ -66,17 +76,32 @@ def feature_extract(record_name):
     ann = wfdb.rdann(record_name, 'atr', pn_dir='mitdb')
 
     # Extract annotation symbols and sample indices
-    symbols = ann.symbol
+    symbols = np.array(ann.symbol[1:])
+    #eliminate indices that are not anywhere close to the amplitude of the r-peak
     sample_indices = ann.sample[1:]
-    #time_points = sample_indices/sampling_frequency
+    
+    #check = np.where(np.abs(data[lead][sample_indices]) < np.abs(.15*np.mean(data[lead])))[0] #if false, then we should delete
+    check = np.where(np.logical_or(symbols=='~',symbols=='|'))[0]
+
+    sample_indices=np.delete(sample_indices,check, axis=0)
+    symbols=np.delete(symbols,check, axis=0)
 
     #find indices of r wave peaks
-    r_peaks = find_peaks(np.asfarray(data[lead]),prominence = 0.4*max(data[lead]), distance = 72)[0]
+    r_peaks = find_peaks(np.asfarray(data[lead]),prominence = 0.3*max(data[lead]), distance = 72, height=0.25*max(data[lead]))[0]
+        #find r-peaks missed
+    #r2r_peaks = np.diff(r_peaks)
+        #check=np.where(r2r_peaks>400 )[0]
+    #r_peaks = np.insert(r_peaks, check+1,(r_peaks[check]+r_peaks[check+1])/2)
+
+    if len(r_peaks) > len(sample_indices):
+        r_peaks = r_peaks[:len(sample_indices)]
+    elif len(r_peaks) < len(sample_indices):
+        sample_indices = sample_indices[:len(r_peaks)]
 
     #find euclidean distance between features
     #generate 180 sample window around r peak
     output_x = []
-    output_y = np.array([])
+    output_y = []
     output_indices = []
 
     #testing
@@ -85,12 +110,9 @@ def feature_extract(record_name):
     for i in range(len(r_peaks)-1):
         #find r-r distance between peaks and store in array
         #ask about r-r array being one shorter than other one and how we should deal with that
-        if i == (len(r_peaks)-1):
-            break
-        else:
-            rr_post = r_peaks[i] - r_peaks[i+1]
+        rr_post = r_peaks[i] - r_peaks[i+1]
         window = []
-        if r_peaks[i] > 90 and r_peaks[i]+90 <len(data) and np.isclose(r_peaks[i], sample_indices[i], atol=200):
+        if r_peaks[i] > 90 and r_peaks[i]+90 <len(data) and np.isclose(r_peaks[i], sample_indices[i], atol=300):
                 window = data[lead][r_peaks[i]-90:r_peaks[i]+90] #window
                 ##### calculations #####
                 #find locations of wave peaks around r wave
@@ -116,11 +138,12 @@ def feature_extract(record_name):
                 indices = [r_peaks[i],sample_indices[i]]
                 output_indices.append(indices)
                 output_x.append(window_vals)
-            #output_y = np.append() #tbd
-
+                output_y.append(symbols[i])
+    print(len(output_indices))
     output_test[['index1','index2']] = output_indices
     output_test[['rr_post', 'rp_dist', 'rq_dist', 'rs_dist','rt_dist','rp_ratio', 'rq_ratio', 'rs_ratio', 'rt_ratio']] = output_x
-    
+    output_test['notes'] = output_y
+
     #use wavelet transform to extract features using wavelet module
     db1 = pywt.Wavelet('db1')
     coeffs = pywt.wavedec(data[lead], db1, level=3)
@@ -133,20 +156,17 @@ def feature_extract(record_name):
     axs[0].plot(data['Time'][r_peaks], data[lead][r_peaks], 'x')
     axs[0].set_title('Normalized and filtered ECG data')
     
-
+    
     axs[1].plot(data['Time'],data[lead])
-    axs[1].plot(data['Time'][sample_indices], data[lead][sample_indices], 'x')
+    axs[1].plot(data['Time'][sample_indices+5], data[lead][sample_indices+5], 'x')
     
     plt.tight_layout()
     plt.show()
     
     output_test.to_csv('lol.csv', index=False)
-    return output_x, len(output_x)
-    
+    #return output_x, len(output_x)
 
 # Example usage
-#save_ecg_to_csv('103')
-print(feature_extract('103'))
+save_ecg_to_csv('114')
+print(feature_extract('114'))
 
-#beat detection slightly works; move on to peak processing. we are losing half of our peaks
-#try to up atol to 200?
