@@ -34,8 +34,8 @@ def save_ecg_to_csv(record_name):
 ###################################################
 
 ############### bandpass filter ###################
-    highcut = 40.0
-    lowcut = 0.5
+    highcut = 15
+    lowcut = .5
 
     nyq = 0.5 * sampling_frequency
     low = lowcut / nyq
@@ -50,6 +50,15 @@ def save_ecg_to_csv(record_name):
     df[lead_names[0]] = df[lead_names[0]]-np.asfarray(baseline)
 ###################################################
 
+################### moving window integrations ######################
+    def moving_window(data, window_size):
+        window = np.ones(window_size) / window_size
+        integrated_signal = np.convolve(data, window, mode='same')
+        return integrated_signal
+    
+    df[lead_names[0]] = moving_window(df[lead_names[0]], 3)
+#####################################################################
+
     # Save DataFrame to CSV file
     filename = f'{record_name}.csv'
     df.to_csv(filename, index=False)
@@ -57,18 +66,6 @@ def save_ecg_to_csv(record_name):
     
 
 def feature_extract(record_name):
-
-    def derivative_and_square(data):
-        # First derivative
-        derivative = np.gradient(data)
-        # Squaring
-        #squared_signal = derivative**2
-        return derivative
-    
-    def moving_window(data, window_size):
-        window = np.ones(window_size) / window_size
-        integrated_signal = np.convolve(data, window, mode='same')
-        return integrated_signal
     
     def threshold_peaks(data, threshold_value=0.5):
         mean_peak_height = np.mean(data)
@@ -80,13 +77,14 @@ def feature_extract(record_name):
     data = pd.read_csv(f"C:\\Users\\rigga\\Documents\\BMEN 207\\Honors project\\{record_name}.csv")
     lead = data.columns[1]
 
-    data['gradient'] = derivative_and_square(data[lead])        #first derivative peak is very reliably in the middle of the increasing part of the r wave
+    data['gradient'] = np.gradient(data[lead])        #first derivative peak is very reliably in the middle of the increasing part of the r wave
     r_peaks = find_peaks(np.asfarray(data['gradient']),prominence = 0.3*max(data['gradient']), distance = 72, height=0.25*max(data['gradient']))[0]
     print('1st derivative peaks length:' + str(len(r_peaks)))
     peak_dev1 = r_peaks
+    print(peak_dev1)
     
-    for i in range(1):
-        data['gradient'] = derivative_and_square(data['gradient'])  #third derivative usually finds middle of descending part of r wave
+    for i in range(2):
+        data['gradient'] = np.gradient(data['gradient'])  #third derivative usually finds middle of descending part of r wave
         r_peaks = find_peaks(np.asfarray(data['gradient']),prominence = 0.3*max(data['gradient']), distance = 72, height=0.25*max(data['gradient']))[0]
         print(f'{i+2} derivative r_peaks length= {len(r_peaks)}')
     
@@ -176,7 +174,7 @@ def feature_extract(record_name):
 
     ######################## plots #########################
     fig, axs = plt.subplots(2, 1, figsize=(10, 5))
-
+    
     #plot fo raw data
     axs[0].plot(data['Time'],data[lead])
     axs[0].plot(data['Time'][r_peaks], data[lead][r_peaks], 'x')
@@ -192,6 +190,7 @@ def feature_extract(record_name):
     plt.show()'''
     axs[1].plot(data['Time'],data[lead])
     axs[1].plot(data['Time'][peak_dev1], data[lead][peak_dev1], 'x')
+    axs[1].plot(data['Time'][sample_indices], data[lead][sample_indices], 'r.')
     axs[1].set_title('1st derivative')
     axs[1].grid(True)
     plt.tight_layout()
@@ -202,6 +201,7 @@ def feature_extract(record_name):
     return output_x
 
 # Example usage
-save_ecg_to_csv('103')
+#save_ecg_to_csv('103')
 feature_extract('103')
+
 
