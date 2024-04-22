@@ -1,197 +1,157 @@
-import wfdb
 import pandas as pd
 import numpy as np
-from scipy.signal import medfilt, find_peaks, butter, lfilter
+import preprocessing # type: ignore
+import time as time
+import tensorflow as tf
+#from keras.layers import experimental
 import matplotlib.pyplot as plt
 
-# Function to save ECG data to CSV
-def save_ecg_to_csv(record_name):
-    # Read ECG record
-    record = wfdb.rdrecord(record_name, pn_dir='mitdb')
+start_time = time.time()
 
-    # Extract signal data
-    ecg_data = record.p_signal
-    lead_names = record.sig_name
+def build_cnn_model(input_shape, num_classes):
+    model = tf.keras.Sequential()
 
-    # Calculate time information based on sampling frequency
-    sampling_frequency = record.fs  # Sampling frequency in samples per second
-    num_samples = len(ecg_data)    # Total number of samples
-    time = 1/sampling_frequency * np.arange(0,num_samples)
+    #add normalizing layer
+    #model.add(tf.keras.layers.experimental.preprocessing.Normalization())
 
-    # Create a DataFrame to store stuff
-    df = pd.DataFrame(columns=['Time']+lead_names)
-    df[lead_names] = ecg_data
-    df['Time'] = time
+    #add convolutional and pooling layers
+    model.add(tf.keras.layers.Conv1D(filters=32, kernel_size=1, activation='relu', input_shape=input_shape))
+    model.add(tf.keras.layers.MaxPooling1D(pool_size=1))
+    model.add(tf.keras.layers.Conv1D(filters=64, kernel_size=1, activation='relu'))
+    model.add(tf.keras.layers.MaxPooling1D(pool_size=1))
 
-################# median filter ###################
-    baseline = medfilt(df[lead_names[0]], 71)       #cite the guy for this
-    baseline = medfilt(baseline, 215)
-    df[lead_names[0]] = df[lead_names[0]]-np.asfarray(baseline)
-###################################################
+    #flatten and fully connected layers
+    model.add(tf.keras.layers.Flatten())
+    model.add(tf.keras.layers.Dense(128, activation='relu'))
 
-############### bandpass filter ###################
-    highcut = 15
-    lowcut = .5
+    # Add the output layer with softmax activation for multi-class classification
+    model.add(tf.keras.layers.Dense(num_classes, activation='softmax'))
 
-    nyq = 0.5 * sampling_frequency
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = butter(5, [low, high], btype='band')
-    df[lead_names[0]] = lfilter(b, a, df[lead_names[0]])
-####################################################
+    # Compile model
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
-################# median filter ###################
-    baseline = medfilt(df[lead_names[0]], 71)       #cite the guy for this
-    baseline = medfilt(baseline, 215)
-    df[lead_names[0]] = df[lead_names[0]]-np.asfarray(baseline)
-###################################################
+    return model
 
-################### moving window integrations ######################
-    def moving_window(data, window_size):
-        window = np.ones(window_size) / window_size
-        integrated_signal = np.convolve(data, window, mode='same')
-        return integrated_signal
-    
-    df[lead_names[0]] = moving_window(df[lead_names[0]], 3)
-#####################################################################
-
-    # Save DataFrame to CSV file
-    filename = f'{record_name}.csv'
-    df.to_csv(filename, index=False)
-    print(f'Saved {filename}')
-    
-def feature_extract(record_name):
-    
-    def threshold_peaks(data, threshold_value=0.5):
-        mean_peak_height = np.mean(data)
-        threshold = mean_peak_height * threshold_value
-        peaks, _ = find_peaks(data, height=threshold)
-        return peaks
-
-    data = pd.read_csv(f"C:\\Users\\pharr\\OneDrive\\Desktop\\PYTHON\\{record_name}.csv")
-    lead = data.columns[1]
-
-    data['gradient'] = np.gradient(data[lead])        #first derivative peak is very reliably in the middle of the increasing part of the r wave
-    r_peaks = find_peaks(np.asfarray(data['gradient']),prominence = 0.3*max(data['gradient']), distance = 72, height=0.25*max(data['gradient']))[0]
-    print('1st derivative peaks length:' + str(len(r_peaks)))
-    peak_dev1 = r_peaks
-    print(peak_dev1)
-    
-    # Read annotation data
-    ann = wfdb.rdann(record_name, 'atr', pn_dir='mitdb')
-
-    # Extract annotation symbols and sample indices
-    symbols = ann.symbol
-    sample_indices = ann.sample
-    #time_points = sample_indices/sampling_frequency
-
-##################### harrison code #################
-
-    #validate sample_indices - delete symbols that show artifacts
-    #check= np.where(np.logical_or(symbols=='~',symbols=='|'))[0] 
-
-    #sample_indices=np.delete(sample_indices,check, axis=0)
-    #symbols=np.delete(symbols,check, axis=0)
-
-    #validate sample_indices - check for really close and really far annotations
-    #check = np.where(np.logical_or(np.diff(sample_indices)>1.75*np.mean(np.diff(sample_indices)),np.diff(sample_indices)<.*np.mean(np.diff(sample_indices))))
-    #check = np.array(check)
-
-    #sample_indices=np.delete(sample_indices,check+1, axis=0)
-    #symbols=np.delete(symbols,check+1, axis=0)
-
-    #print(sample_indices)
-    #validate sample_indices - make sure each r_peak aligns with an annotation
-    r_peaks_matched, sample_indices_matched, symbols_matched = [], [], []
-
-    for i in range(len(r_peaks)):
-        close = np.isclose(r_peaks[i],sample_indices, atol=50)
-        close.tolist()
-        if True in close: #has to be really close to ensure that only one True is in the array
-            close_indices = np.where(close)[0][0]
-            r_peaks_matched.append(r_peaks[i])
-            sample_indices_matched.append(sample_indices[close_indices])
-            symbols_matched.append(symbols[close_indices])
-
-    # should return arrays with same values
-    
-    output_x = []
-    output_y = []
-    output_indices = []
-    output_test = pd.DataFrame(columns = ['index1','index2','rr_post', 'rp_dist', 'rq_dist', 'rs_dist','rt_dist','rp_ratio', 'rq_ratio', 'rs_ratio', 'rt_ratio'])
-    
-    for i in range(len(r_peaks_matched)-1):
-        #find r-r distance between peaks and store in array
-        #ask about r-r array being one shorter than other one and how we should deal with that
-        rr_post = r_peaks_matched[i+1] - r_peaks_matched[i]
-        window = []
-
-        if r_peaks_matched[i] > 90 and r_peaks_matched[i]+90 <len(data):
-                window = data[lead][r_peaks_matched[i]-90:r_peaks_matched[i]+90] #window
-                ##### calculations #####
-
-                #find locations of wave peaks around r wave
-                px, py = np.argmax(window[0:40]), np.max(window[0:40])
-                qx,qy = np.argmin(window[75:85]), np.min(window[75:85])
-                sx, sy = np.argmin(window[95:105]), np.min(window[95:105])
-                tx, ty = np.argmax(window[150:180]), np.max(window[150:180])
-
-                #find distance between r wave and each other wave
-                rx,ry = r_peaks[i], data[lead][r_peaks[i]]
-
-                rp_dist, rq_dist, rs_dist, rt_dist = np.sqrt((rx-px)**2 + (ry-py)**2), np.sqrt((rx-qx)**2 + (ry-qy)**2), np.sqrt((rx-sx)**2 + (ry-sy)**2), np.sqrt((rx-tx)**2 + (ry-ty)**2)
-                #perhaps make array to store distances; do more research
-
-                #find ratio between heights of r peak and each other peak (p/r)
-                rp_ratio = py/ry
-                rq_ratio = qy/ry
-                rs_ratio = sy/ry
-                rt_ratio = ty/ry
-
-                #make array of importnat values for this window
-                window_vals = np.array([rr_post, rp_dist, rq_dist, rs_dist, rt_dist, rp_ratio, rq_ratio, rs_ratio, rt_ratio])
-                output_x.append(window_vals)
-
-    output_y = symbols_matched
-    output_test['index1'] = r_peaks_matched[:len(r_peaks_matched)-1]
-    output_test['index2'] = sample_indices_matched[:len(sample_indices_matched)-1]
-    output_test[['rr_post', 'rp_dist', 'rq_dist', 'rs_dist','rt_dist','rp_ratio', 'rq_ratio', 'rs_ratio', 'rt_ratio']]  = output_x
-    output_test['notes'] = symbols_matched[:len(symbols_matched)-1]
-
-    output_test.to_csv('lol.csv', index=False)
-
-    '''
-    ######################## plots #########################
-    fig, axs = plt.subplots(2, 1, figsize=(10, 5))
-    
-    #plot fo raw data
-    axs[0].plot(data['Time'],data[lead])
-    axs[0].plot(data['Time'][r_peaks], data[lead][r_peaks], 'x')
-    axs[0].set_title('2nd derivative')
-    axs[0].grid(True)
-    '''
-
-    #plot of double filtered data
-    '''    axs[1].plot(data['Time'],data[lead])
-    axs[1].plot(data['Time'][sample_indices], data[lead][sample_indices], 'x')
-    axs[1].set_title('annotations')
-    axs[1].grid(True)
-    plt.tight_layout()
-    plt.show()'''
-
-    plt.figure()
-    plt.plot(data['Time'],data[lead])
-    plt.plot(data['Time'][r_peaks_matched], data[lead][r_peaks_matched], 'x')
-    plt.plot(data['Time'][sample_indices], data[lead][sample_indices], 'r.')
-    plt.title('1st derivative')
-    plt.grid(True)
-
-    plt.tight_layout()
+def plot_training_history(history):
+    # Plot training & validation accuracy values
+    plt.plot(history.history['accuracy'])
+    plt.plot(history.history['val_accuracy'])
+    plt.title('Model accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend(['Train', 'Validation'], loc='upper left')
     plt.show()
 
-    ########################################################
+    # Plot training & validation loss values
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('Model loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(['Train', 'Validation'], loc='upper left')
+    plt.show()
 
-# Example usage
-save_ecg_to_csv('106')
-feature_extract('106')
 
+train_files = ['101','106', '108', '109', '112', '114', '115', '116', '118', '119', '122', '124', '201', '203', '205', '207', '208', '209', '215', '220', '223', '230'] #training files numbers
+test_files = ['100', '103', '105', '111', '113', '117', '121', '123', '200', '202', '210', '212', '213', '214', '219', '221', '222', '228', '231', '232', '233', '234'] #testing files numbers
+
+annotation_classes = {
+    'N': 0, 'L': 0, 'R': 0,
+    'A': 1, 'a': 1, 'J': 1, 'S': 1, 'e': 1, 'j': 1,
+    'V': 2, 'E': 2,
+    'F': 3,
+    'P': 4, '/': 4, 'f': 4, 'u': 4,
+    '+' : 0,
+    '[' : 0,
+    '!' : 0,
+    ']' : 0,
+    'x' : 0,
+    'Q' : 0,
+    '~' : 0,
+    '|' : 0
+}
+
+x_train = []
+y_train = []
+
+x_test = []
+y_test = []
+
+#get data from files as dataframe and make big 3d array for training
+################## make training arrays ##################
+for record_name in train_files:
+
+  #set up file paths
+  file_path_x = f"C:\\Users\\rigga\\Documents\\BMEN 207\\Honors project\\{record_name}_features.csv"
+
+  #read in data from files as dataframe
+  data = pd.read_csv(file_path_x)
+
+  x_data = data.copy()
+  x_data.pop('index1')
+  x_data.pop('index2')
+  x_data.pop('notes')  
+
+  y_data = data['notes'].copy().map(annotation_classes)
+
+  x_arr = x_data.to_numpy().tolist()
+  y_arr = y_data.to_numpy().tolist()
+
+  x_train = x_train + x_arr
+  y_train = y_train + y_arr
+  
+x_train = np.array(x_train)
+y_train = np.array(y_train)
+##########################################################
+
+################## make testing arrays ##################
+for record_name in test_files:
+
+  #set up file paths
+  file_path_x = f"C:\\Users\\rigga\\Documents\\BMEN 207\\Honors project\\{record_name}_features.csv"
+
+  #read in data from files as dataframe
+  data = pd.read_csv(file_path_x)
+
+  x_data = data.copy()
+  x_data.pop('index1')
+  x_data.pop('index2')
+  x_data.pop('notes')  
+
+  y_data = data['notes'].copy().map(annotation_classes)
+
+  x_arr = x_data.to_numpy().tolist()
+  y_arr = y_data.to_numpy().tolist()
+
+  x_test = x_test + x_arr
+  y_test = y_test + y_arr
+  
+x_test = np.array(x_test)
+y_test = np.array(y_test)
+
+##########################################################
+# Reshape input data to match the expected shape of the model
+
+# Verify the shapes of the input data before training
+
+print("Shape of x_train:", x_train.shape)
+print("Shape of x_test:", x_test.shape)
+
+model = build_cnn_model((1,9),5)
+
+early_stopping_callback = tf.keras.callbacks.EarlyStopping(
+    monitor='val_accuracy',  
+    patience=3,  
+    restore_best_weights=True  
+)
+
+x_train = np.reshape(x_train, (len(x_train),1,9))
+x_test = np.reshape(x_test, (len(x_test),1,9))
+
+print(x_train.shape)
+history = model.fit(x_train, y_train, epochs=10, validation_data = (x_test,y_test), callbacks=[early_stopping_callback])
+
+plot_training_history(history)
+
+end_time = time.time()
+print(f'model took {end_time - start_time} to train')
